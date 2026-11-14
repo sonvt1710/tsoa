@@ -1,12 +1,25 @@
 import { ExtendedSpecConfig } from '../cli';
 import { Tsoa, assertNever, Swagger } from '@tsoa/runtime';
 import * as handlebars from 'handlebars';
+import { hasUndefined } from '../utils/propertyRequirement';
 
 export abstract class SpecGenerator {
   constructor(
     protected readonly metadata: Tsoa.Metadata,
     protected readonly config: ExtendedSpecConfig,
   ) {}
+
+  /**
+   * OpenAPI before 3.2 has no `query` field on a path item, so a QUERY operation goes in the
+   * registered `x-oai-additionalOperations` extension: https://spec.openapis.org/registry/extension/x-oai-additionalOperations
+   */
+  protected operationSlot(pathObject: Record<string, any>, method: Tsoa.Method['method']): [Record<string, any>, string] {
+    if (method === 'query') {
+      pathObject['x-oai-additionalOperations'] = pathObject['x-oai-additionalOperations'] || {};
+      return [pathObject['x-oai-additionalOperations'], 'QUERY'];
+    }
+    return [pathObject, method];
+  }
 
   protected buildAdditionalProperties(type: Tsoa.Type) {
     return this.getSwaggerType(type);
@@ -114,7 +127,7 @@ export abstract class SpecGenerator {
 
     const additionalProperties = objectLiteral.additionalProperties && this.getSwaggerType(objectLiteral.additionalProperties);
 
-    const required = objectLiteral.properties.filter(prop => this.isRequiredWithoutDefault(prop) && !this.hasUndefined(prop)).map(prop => prop.name);
+    const required = objectLiteral.properties.filter(prop => this.isRequiredInSchema(prop)).map(prop => prop.name);
 
     // An empty list required: [] is not valid.
     // If all properties are optional, do not specify the required keyword.
@@ -215,7 +228,7 @@ export abstract class SpecGenerator {
   protected abstract getSwaggerTypeForEnumType(enumType: Tsoa.EnumType, title?: string): Swagger.Schema2 | Swagger.Schema3;
 
   protected hasUndefined(property: Tsoa.Property): boolean {
-    return property.type.dataType === 'undefined' || (property.type.dataType === 'union' && property.type.types.some(type => type.dataType === 'undefined'));
+    return hasUndefined(property);
   }
 
   protected queriesPropertyToQueryParameter(property: Tsoa.Property): Tsoa.Parameter {
@@ -235,5 +248,9 @@ export abstract class SpecGenerator {
 
   protected isRequiredWithoutDefault(prop: Tsoa.Property | Tsoa.Parameter): boolean | undefined {
     return prop.required && prop.default == null;
+  }
+
+  protected isRequiredInSchema(prop: Tsoa.Property): boolean {
+    return Boolean(this.isRequiredWithoutDefault(prop) && !this.hasUndefined(prop));
   }
 }

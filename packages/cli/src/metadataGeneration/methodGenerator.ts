@@ -9,10 +9,11 @@ import { MetadataGenerator } from './metadataGenerator';
 import { ParameterGenerator } from './parameterGenerator';
 
 import { Tsoa } from '@tsoa/runtime';
-import { TypeResolver } from './typeResolver';
+import { hasBinaryBody } from '../utils/internalTypeGuards';
 import { getHeaderType } from '../utils/headerTypeHelpers';
 
-type HttpMethod = 'options' | 'get' | 'post' | 'put' | 'patch' | 'delete' | 'head';
+type HttpMethod = Tsoa.Method['method'];
+const httpMethods: readonly HttpMethod[] = ['options', 'get', 'post', 'put', 'patch', 'delete', 'head', 'query'];
 
 export class MethodGenerator {
   protected method?: HttpMethod;
@@ -41,14 +42,7 @@ export class MethodGenerator {
       throw new GenerateMetadataError("This isn't a valid a controller method.");
     }
 
-    let nodeType = this.node.type;
-    if (!nodeType) {
-      const typeChecker = this.current.typeChecker;
-      const signature = typeChecker.getSignatureFromDeclaration(this.node);
-      const implicitType = typeChecker.getReturnTypeOfSignature(signature!);
-      nodeType = typeChecker.typeToTypeNode(implicitType, undefined, ts.NodeBuilderFlags.NoTruncation)!;
-    }
-    const type = new TypeResolver(nodeType, this.current).resolve();
+    const type = this.withLocation(`'${this.getCurrentLocation()}' return type`, () => this.resolveReturnType());
     const responses = this.commonResponses.concat(this.getMethodResponses());
     const { response: successResponse, status: successStatus } = this.getMethodSuccessResponse(type);
     responses.push(successResponse);
@@ -67,7 +61,7 @@ export class MethodGenerator {
       parameters,
       path: this.path,
       produces: this.produces,
-      consumes: this.consumes ?? (parameters.some(p => p.in === 'body' && p.type.dataType === 'binary') ? 'application/octet-stream' : undefined),
+      consumes: this.consumes ?? (hasBinaryBody(parameters) ? 'application/octet-stream' : undefined),
       responses,
       successStatus,
       security: this.getSecurity(),
@@ -75,6 +69,24 @@ export class MethodGenerator {
       tags: this.getTags(),
       type,
     };
+  }
+
+  private resolveReturnType(): Tsoa.Type {
+    if (this.node.type) {
+      return this.current.resolveTypeNode(this.node.type);
+    }
+    const signature = this.current.typeChecker.getSignatureFromDeclaration(this.node);
+    return this.current.resolveType(this.current.typeChecker.getReturnTypeOfSignature(signature!));
+  }
+
+  /** Runs `generate`, adding where it ran (`'Controller.method'`) to any error it throws. */
+  private withLocation<T>(location: string, generate: () => T): T {
+    try {
+      return generate();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      throw new GenerateMetadataError(`${message} \n in ${location}`);
+    }
   }
 
   private buildParameters() {
@@ -85,16 +97,7 @@ export class MethodGenerator {
     const fullPath = path.join(this.parentPath || '', this.path);
     const method = this.method;
     const parameters = this.node.parameters
-      .map(p => {
-        try {
-          return new ParameterGenerator(p, method, fullPath, this.current).Generate();
-        } catch (e) {
-          const methodId = this.node.name as ts.Identifier;
-          const controllerId = (this.node.parent as ts.ClassDeclaration).name as ts.Identifier;
-          const message = e instanceof Error ? e.message : String(e);
-          throw new GenerateMetadataError(`${message} \n in '${controllerId.text}.${methodId.text}'`);
-        }
-      })
+      .map(p => this.withLocation(`'${this.getCurrentLocation()}'`, () => new ParameterGenerator(p, method, fullPath, this.current).Generate()))
       .reduce((flattened, params) => [...flattened, ...params], []);
 
     this.validateBodyParameters(parameters);
@@ -129,7 +132,7 @@ export class MethodGenerator {
       throw new GenerateMetadataError(`Only one queries parameter allowed in '${this.getCurrentLocation()}' method.`);
     }
     if (queriesParameters.length > 0 && queryParameters.length > 0) {
-      throw new GenerateMetadataError(`Choose either during @Query or @Queries in '${this.getCurrentLocation()}' method.`);
+      throw new GenerateMetadataError(`Choose either during @QueryParam or @QueryParams in '${this.getCurrentLocation()}' method.`);
     }
   }
 
@@ -159,7 +162,7 @@ export class MethodGenerator {
 
     const decorator = pathDecorators[0];
 
-    this.method = decorator.text.toLowerCase() as any;
+    this.method = decorator.text.toLowerCase() as HttpMethod;
     // if you don't pass in a path to the method decorator, we'll just use the base route
     // todo: what if someone has multiple no argument methods of the same type in a single controller?
     // we need to throw an error there
@@ -263,7 +266,7 @@ export class MethodGenerator {
     if (!ts.isCallExpression(expression) || !expression.typeArguments?.length) {
       return undefined;
     }
-    return new TypeResolver(expression.typeArguments[schemaIndex], this.current).resolve();
+    return this.current.resolveTypeNode(expression.typeArguments[schemaIndex]);
   }
 
   private getMethodSuccessExamples() {
@@ -281,7 +284,7 @@ export class MethodGenerator {
   }
 
   private supportsPathMethod(method: string) {
-    return ['options', 'get', 'post', 'put', 'patch', 'delete', 'head'].some(m => m === method.toLowerCase());
+    return httpMethods.some(m => m === method.toLowerCase());
   }
 
   private getIsDeprecated() {

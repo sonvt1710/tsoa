@@ -1,7 +1,9 @@
 import * as path from 'path';
 import { ExtendedRoutesConfig } from '../cli';
 import { Tsoa, TsoaRoute, assertNever } from '@tsoa/runtime';
-import { isRefType } from '../utils/internalTypeGuards';
+import { hasBinaryBody, isNullType, isRefType } from '../utils/internalTypeGuards';
+import { getUnionDiscriminator } from '../utils/unionDiscriminator';
+import { hasUndefined } from '../utils/propertyRequirement';
 import { convertBracesPathParams, normalisePath } from '../utils/pathUtils';
 import { fsExists, fsReadFile } from '../utils/fs';
 
@@ -103,8 +105,9 @@ export abstract class AbstractRouteGenerator<Config extends ExtendedRoutesConfig
             return {
               fullPath: normalisedFullPath,
               method: method.method.toLowerCase(),
+              isQueryMethod: method.method === 'query',
               name: method.name,
-              binaryBody: method.parameters.some(parameter => parameter.in === 'body' && parameter.type.dataType === 'binary'),
+              binaryBody: hasBinaryBody(method.parameters),
               parameters: parameterObjs,
               path: normalisedMethodPath,
               uploadFile: uploadFilesWithDifferentFieldParameter.length > 0,
@@ -145,6 +148,7 @@ export abstract class AbstractRouteGenerator<Config extends ExtendedRoutesConfig
         },
       },
       useSecurity: this.metadata.controllers.some(controller => controller.methods.some(method => !!method.security.length)),
+      useQueryMethod: this.metadata.controllers.some(controller => controller.methods.some(method => method.method === 'query')),
       esm: this.options.esm,
     };
   }
@@ -229,6 +233,19 @@ export abstract class AbstractRouteGenerator<Config extends ExtendedRoutesConfig
 
     if (type.dataType === 'union' || type.dataType === 'intersection') {
       schema.subSchemas = type.types.map(type => this.buildProperty(type));
+    }
+
+    if (type.dataType === 'union') {
+      const discriminator = getUnionDiscriminator(
+        type.types.filter(x => !isNullType(x) && x.dataType !== 'undefined'),
+        property => !!property.required && property.default === undefined && !hasUndefined(property),
+      );
+      if (discriminator) {
+        schema.discriminator = {
+          propertyName: discriminator.propertyName,
+          mapping: discriminator.members.flatMap(member => member.values.map((value): [string, string] => [value, member.type.refName])),
+        };
+      }
     }
 
     if (type.dataType === 'nestedObjectLiteral') {

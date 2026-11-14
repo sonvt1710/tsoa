@@ -1,4 +1,4 @@
-import { Middlewares as GenericMiddlewares, Get, Query, Route, Security } from '@tsoa/runtime';
+import { Middlewares as GenericMiddlewares, Get, QueryParam, Route, Security } from '@tsoa/runtime';
 
 import type { preHandlerHookHandler } from 'fastify';
 
@@ -31,7 +31,7 @@ export class MiddlewareFastifyController {
   @Security('api_key')
   @Middlewares(testMiddleware('secured'))
   @Get('/secured')
-  public async secured(@Query() access_token: string): Promise<{ token: string }> {
+  public async secured(@QueryParam() access_token: string): Promise<{ token: string }> {
     middlewaresState.securedController = true;
     return { token: access_token };
   }

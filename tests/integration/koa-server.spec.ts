@@ -10,12 +10,14 @@ import { registerFileUploadTests } from './common/file-upload';
 import { registerRequestRejectionTests } from './common/request-rejections';
 import { registerSecurityTests } from './common/security';
 import { registerValidateTests } from './common/validate';
-import { verifyRequest, verifyGetRequest, verifyPostRequest, verifyFileUploadRequest } from './utils';
+import { verifyRequest, verifyGetRequest, verifyPostRequest, verifyFileUploadRequest, describeQueryMethod } from './utils';
 
 const app = server;
 const basePath = '/v1';
 
 describe('Koa Server', () => {
+  describeQueryMethod(app, basePath);
+
   registerBasicRequestTests(app, basePath);
 
   registerRequestRejectionTests(app, basePath);

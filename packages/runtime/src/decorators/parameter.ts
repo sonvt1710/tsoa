@@ -5,7 +5,7 @@
  * A parameter typed as `Readable` (from `stream`) receives the raw request stream without parsing or validation.
  * Its media type defaults to `application/octet-stream`; use `@Consumes` to override it.
  * The type must be written as `Readable`; `stream.Readable`, aliases and unions are not recognised.
- * On express and koa, a body that a body parser already read is rejected with a `body` field error; this includes
+ * On express and koa, a body that a body parser already read is rejected with a field error named after the parameter (e.g. `fieldErrors[name]`); this includes
  * an empty request whose content type matches an installed parser.
  * express and koa apply no size limit. hapi applies `payload.maxBytes` only to a request that declares
  * `Content-Length`; a chunked upload is not counted.
@@ -65,7 +65,7 @@ export function Path(name?: string): ParameterDecorator {
  *
  * @param {string} [name] The name of the query parameter
  */
-export function Query(name?: string): ParameterDecorator {
+export function QueryParam(name?: string): ParameterDecorator {
   return () => {
     return;
   };
@@ -74,7 +74,7 @@ export function Query(name?: string): ParameterDecorator {
 /**
  * Inject all query values in a single object
  */
-export function Queries(): ParameterDecorator {
+export function QueryParams(): ParameterDecorator {
   return () => {
     return;
   };

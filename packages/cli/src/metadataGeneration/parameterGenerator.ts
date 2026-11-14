@@ -6,7 +6,6 @@ import { GenerateMetadataError } from './exceptions';
 import { getInitializerValue } from './initializer-value';
 import { MetadataGenerator } from './metadataGenerator';
 import { Tsoa } from '@tsoa/runtime';
-import { TypeResolver } from './typeResolver';
 import { getHeaderType } from '../utils/headerTypeHelpers';
 
 export class ParameterGenerator {
@@ -18,6 +17,10 @@ export class ParameterGenerator {
   ) {}
 
   public Generate(): Tsoa.Parameter[] {
+    if (getDecorators(this.parameter, identifier => identifier.text === 'Query')?.length) {
+      const parameterName = (this.parameter.name as ts.Identifier).text;
+      throw new GenerateMetadataError(`@Query is the HTTP QUERY method decorator. Use @QueryParam('${parameterName}') for a query string parameter.`);
+    }
     const decoratorName = getNodeFirstDecoratorName(this.parameter, identifier => this.supportParameterDecorator(identifier.text));
 
     switch (decoratorName) {
@@ -33,9 +36,9 @@ export class ParameterGenerator {
         return [this.getFormFieldParameter(this.parameter)];
       case 'Header':
         return [this.getHeaderParameter(this.parameter)];
-      case 'Query':
+      case 'QueryParam':
         return this.getQueryParameters(this.parameter);
-      case 'Queries':
+      case 'QueryParams':
         return [this.getQueriesParameters(this.parameter)];
       case 'Path':
         return [this.getPathParameter(this.parameter)];
@@ -144,7 +147,7 @@ export class ParameterGenerator {
 
       const status = String(statusArgumentType.value);
 
-      const type = new TypeResolver(bodyArgument, this.current, typeNode).resolve();
+      const type = this.current.resolveTypeNode(bodyArgument, typeNode);
       const { examples, exampleLabels } = this.getParameterExample(parameter, parameterName);
       return {
         description: this.getParameterDescription(parameter) || '',
@@ -302,7 +305,7 @@ export class ParameterGenerator {
     const parameterName = (parameter.name as ts.Identifier).text;
     const type = this.getValidatedType(parameter);
 
-    const queriesType = this.resolveQueriesType(type, parameterName, parameter);
+    const queriesType = this.resolveQueriesType(type, parameterName);
 
     for (const property of queriesType.properties) {
       this.validateQueriesProperties(property, parameterName);
@@ -325,10 +328,10 @@ export class ParameterGenerator {
   }
 
   /**
-   * Resolves the type for @Queries, unwrapping refAlias types (TypeScript type aliases)
+   * Resolves the type for @QueryParams, unwrapping refAlias types (TypeScript type aliases)
    * to their underlying object type when possible.
    */
-  private resolveQueriesType(type: Tsoa.Type, parameterName: string, parameter: ts.ParameterDeclaration): Tsoa.RefObjectType | Tsoa.NestedObjectLiteralType {
+  private resolveQueriesType(type: Tsoa.Type, parameterName: string): Tsoa.RefObjectType | Tsoa.NestedObjectLiteralType {
     if (type.dataType === 'refObject' || type.dataType === 'nestedObjectLiteral') {
       return type;
     }
@@ -344,29 +347,9 @@ export class ParameterGenerator {
       }
     }
 
-    // Handle cases where TypeResolver doesn't properly resolve complex types
-    // like Zod's z.infer types to refObject or nestedObjectLiteral
-    let typeNode = parameter.type;
-    if (!typeNode) {
-      const typeFromChecker = this.current.typeChecker.getTypeAtLocation(parameter);
-      typeNode = this.current.typeChecker.typeToTypeNode(typeFromChecker, undefined, ts.NodeBuilderFlags.NoTruncation);
-    }
-
-    if (typeNode && ts.isTypeReferenceNode(typeNode)) {
-      try {
-        const actualType = this.current.typeChecker.getTypeAtLocation(typeNode);
-        const typeNodeFromType = this.current.typeChecker.typeToTypeNode(actualType, undefined, ts.NodeBuilderFlags.NoTruncation) as ts.TypeNode;
-        const resolvedType = new TypeResolver(typeNodeFromType, this.current, parameter).resolve();
-
-        if (resolvedType.dataType === 'refObject' || resolvedType.dataType === 'nestedObjectLiteral') {
-          return resolvedType;
-        }
-      } catch (error) {
-        console.warn(`Failed to resolve complex type for @Queries('${parameterName}'):`, error);
-      }
-    }
-
-    throw new GenerateMetadataError(`@Queries('${parameterName}') only support 'refObject' or 'nestedObjectLiteral' types. If you want only one query parameter, please use the '@Query' decorator.`);
+    throw new GenerateMetadataError(
+      `@QueryParams('${parameterName}') only support 'refObject' or 'nestedObjectLiteral' types. If you want only one query parameter, please use the '@QueryParam' decorator.`,
+    );
   }
 
   private validateQueriesProperties(property: Tsoa.Property, parentName: string) {
@@ -381,7 +364,7 @@ export class ParameterGenerator {
           }
         }
       } else if (!this.supportPathDataType(arrayType.elementType)) {
-        throw new GenerateMetadataError(`@Queries('${parentName}') property '${property.name}' can't support array '${arrayType.elementType.dataType}' type.`);
+        throw new GenerateMetadataError(`@QueryParams('${parentName}') property '${property.name}' can't support array '${arrayType.elementType.dataType}' type.`);
       }
     } else if (property.type.dataType === 'nestedObjectLiteral') {
       // For nestedObjectLiteral, validate each property recursively
@@ -392,7 +375,7 @@ export class ParameterGenerator {
         }
       }
     } else if (!this.supportPathDataType(property.type)) {
-      throw new GenerateMetadataError(`@Queries('${parentName}') nested property '${property.name}' Can't support '${property.type.dataType}' type.`);
+      throw new GenerateMetadataError(`@QueryParams('${parentName}') nested property '${property.name}' Can't support '${property.type.dataType}' type.`);
     }
   }
 
@@ -408,7 +391,7 @@ export class ParameterGenerator {
       example,
       exampleLabels,
       in: 'query' as const,
-      name: getNodeFirstDecoratorValue(this.parameter, this.current.typeChecker, ident => ident.text === 'Query') || parameterName,
+      name: getNodeFirstDecoratorValue(this.parameter, this.current.typeChecker, ident => ident.text === 'QueryParam') || parameterName,
       parameterName,
       required: !parameter.questionToken && !parameter.initializer,
       validators: getParameterValidators(this.parameter, parameterName),
@@ -417,7 +400,7 @@ export class ParameterGenerator {
 
     if (this.getQueryParameterIsHidden(parameter)) {
       if (commonProperties.required) {
-        throw new GenerateMetadataError(`@Query('${parameterName}') Can't support @Hidden because it is required (does not allow undefined and does not have a default value).`);
+        throw new GenerateMetadataError(`@QueryParam('${parameterName}') Can't support @Hidden because it is required (does not allow undefined and does not have a default value).`);
       }
       return [];
     }
@@ -425,7 +408,7 @@ export class ParameterGenerator {
     if (type.dataType === 'array') {
       const arrayType = type;
       if (!this.supportPathDataType(arrayType.elementType)) {
-        throw new GenerateMetadataError(`@Query('${parameterName}') Can't support array '${arrayType.elementType.dataType}' type.`);
+        throw new GenerateMetadataError(`@QueryParam('${parameterName}') Can't support array '${arrayType.elementType.dataType}' type.`);
       }
       return [
         {
@@ -437,7 +420,7 @@ export class ParameterGenerator {
     }
 
     if (!this.supportPathDataType(type)) {
-      throw new GenerateMetadataError(`@Query('${parameterName}') Can't support '${type.dataType}' type.`);
+      throw new GenerateMetadataError(`@QueryParam('${parameterName}') Can't support '${type.dataType}' type.`);
     }
 
     return [
@@ -527,11 +510,11 @@ export class ParameterGenerator {
   }
 
   private supportBodyMethod(method: string) {
-    return ['post', 'put', 'patch', 'delete'].some(m => m === method.toLowerCase());
+    return ['post', 'put', 'patch', 'delete', 'query'].some(m => m === method.toLowerCase());
   }
 
   private supportParameterDecorator(decoratorName: string) {
-    return ['header', 'query', 'queries', 'path', 'body', 'bodyprop', 'request', 'requestprop', 'res', 'inject', 'uploadedfile', 'uploadedfiles', 'formfield'].some(
+    return ['header', 'queryparam', 'queryparams', 'path', 'body', 'bodyprop', 'request', 'requestprop', 'res', 'inject', 'uploadedfile', 'uploadedfiles', 'formfield'].some(
       d => d === decoratorName.toLocaleLowerCase(),
     );
   }
@@ -560,12 +543,10 @@ export class ParameterGenerator {
   }
 
   private getValidatedType(parameter: ts.ParameterDeclaration) {
-    let typeNode = parameter.type;
-    if (!typeNode) {
-      const type = this.current.typeChecker.getTypeAtLocation(parameter);
-      typeNode = this.current.typeChecker.typeToTypeNode(type, undefined, ts.NodeBuilderFlags.NoTruncation)!;
+    if (parameter.type) {
+      return this.current.resolveTypeNode(parameter.type, parameter);
     }
-    return new TypeResolver(typeNode, this.current, parameter).resolve();
+    return this.current.resolveType(this.current.typeChecker.getTypeAtLocation(parameter), parameter);
   }
 
   private getQueryParameterIsHidden(parameter: ts.ParameterDeclaration) {
@@ -576,7 +557,7 @@ export class ParameterGenerator {
 
     if (hiddenDecorators.length > 1) {
       const parameterName = (parameter.name as ts.Identifier).text;
-      throw new GenerateMetadataError(`Only one Hidden decorator allowed on @Query('${parameterName}').`);
+      throw new GenerateMetadataError(`Only one Hidden decorator allowed on @QueryParam('${parameterName}').`);
     }
 
     return true;

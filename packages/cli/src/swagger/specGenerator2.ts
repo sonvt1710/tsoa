@@ -88,7 +88,7 @@ export class SpecGenerator2 extends SpecGenerator {
     Object.keys(this.metadata.referenceTypeMap).map(typeName => {
       const referenceType = this.metadata.referenceTypeMap[typeName];
       if (referenceType.dataType === 'refObject') {
-        const required = referenceType.properties.filter(p => this.isRequiredWithoutDefault(p) && !this.hasUndefined(p)).map(p => p.name);
+        const required = referenceType.properties.filter(p => this.isRequiredInSchema(p)).map(p => p.name);
         definitions[referenceType.refName] = {
           description: referenceType.description,
           properties: this.buildProperties(referenceType.properties),
@@ -180,7 +180,8 @@ export class SpecGenerator2 extends SpecGenerator {
   }
 
   private buildMethod(controllerName: string, method: Tsoa.Method, pathObject: any, defaultProduces?: string[]) {
-    const pathMethod: Swagger.Operation = (pathObject[method.method] = this.buildOperation(controllerName, method, defaultProduces));
+    const [operations, operationKey] = this.operationSlot(pathObject, method.method);
+    const pathMethod: Swagger.Operation = (operations[operationKey] = this.buildOperation(controllerName, method, defaultProduces));
     pathMethod.description = method.description;
     pathMethod.summary = method.summary;
     pathMethod.tags = method.tags;
@@ -328,7 +329,7 @@ export class SpecGenerator2 extends SpecGenerator {
 
       return properties.map(property => this.buildParameter(this.queriesPropertyToQueryParameter(property)));
     }
-    throw new Error(`Queries '${source.name}' parameter must be an object.`);
+    throw new Error(`QueryParams '${source.name}' parameter must be an object.`);
   }
 
   private buildParameter(source: Tsoa.Parameter): Swagger.Parameter2 {

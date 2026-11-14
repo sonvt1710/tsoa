@@ -70,6 +70,7 @@ export namespace Swagger {
     options?: Operation31;
     head?: Operation31;
     patch?: Operation31;
+    'x-oai-additionalOperations'?: { [method: string]: Operation31 };
     parameters?: Parameter31[];
   }
 
@@ -212,6 +213,7 @@ export namespace Swagger {
     options?: Operation;
     head?: Operation;
     patch?: Operation;
+    'x-oai-additionalOperations'?: { [method: string]: Operation };
     parameters?: Parameter2[];
   }
 
@@ -224,6 +226,7 @@ export namespace Swagger {
     options?: Operation3;
     head?: Operation3;
     patch?: Operation3;
+    'x-oai-additionalOperations'?: { [method: string]: Operation3 };
     parameters?: Parameter3[];
   }
 
@@ -329,6 +332,11 @@ export namespace Swagger {
     links?: { [name: string]: unknown }; // If needed per spec
   }
 
+  export interface Discriminator {
+    propertyName: string;
+    mapping?: Record<string, string>;
+  }
+
   export interface BaseSchema<P = unknown> {
     type?: string;
     format?: DataFormat;
@@ -358,7 +366,7 @@ export namespace Swagger {
     // moved from Schema
     additionalProperties?: boolean | BaseSchema;
     properties?: { [propertyName: string]: P };
-    discriminator?: string | { propertyName: string; mapping?: Record<string, string> };
+    discriminator?: string | Discriminator;
     readOnly?: boolean;
     xml?: XML;
     externalDocs?: ExternalDocs;
@@ -384,10 +392,7 @@ export namespace Swagger {
     not?: Schema31;
     propertyNames?: Schema31;
 
-    discriminator?: {
-      propertyName: string;
-      mapping?: Record<string, string>;
-    };
+    discriminator?: Discriminator;
   }
 
   export interface Schema3 extends Omit<BaseSchema, 'type'> {
@@ -398,10 +403,7 @@ export namespace Swagger {
     allOf?: BaseSchema[];
     deprecated?: boolean;
     properties?: { [propertyName: string]: Schema3 };
-    discriminator?: {
-      propertyName: string;
-      mapping?: Record<string, string>;
-    };
+    discriminator?: Discriminator;
   }
 
   export interface Schema2 extends BaseSchema {
