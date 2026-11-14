@@ -41,10 +41,7 @@ describe('FastifyTemplateService', () => {
   for (const [name, data, status, contentType] of [
     ['null', null],
     ['undefined', undefined],
-    ['null with explicit status', null, 202],
     ['object with reset-content status', { value: 'discard' }, 205],
-    ['undefined with explicit status', undefined, 200],
-    ['null with unknown status', null, 299],
     ['false', false],
     ['zero', 0],
     ['JSON string', 'plain string', 200, 'application/json'],
@@ -78,6 +75,30 @@ describe('FastifyTemplateService', () => {
         const actual = await app.inject('/');
         expect(actual.statusCode).to.equal(expected.status);
         expect(actual.body).to.equal(expected.body || '');
+      } finally {
+        await app.close();
+      }
+    });
+  }
+
+  // Koa answers an empty result with an explicit status with the status text. tsoa sends an empty body,
+  // as Express and Hapi do, because the generated spec declares no content for these responses.
+  for (const [name, data, status] of [
+    ['null with explicit status', null, 202],
+    ['undefined with explicit status', undefined, 200],
+    ['null with unknown status', null, 299],
+  ] as const) {
+    it(`sends an empty body for ${name}`, async () => {
+      const app = Fastify();
+      const service = new FastifyTemplateService({}, config);
+      app.get('/', async (request, reply) => {
+        await service.apiHandler({ methodName: 'response', controller: new ResponseController(data, status), request, reply, validatedArgs: [] });
+        return reply;
+      });
+      try {
+        const actual = await app.inject('/');
+        expect(actual.statusCode).to.equal(status);
+        expect(actual.body).to.equal('');
       } finally {
         await app.close();
       }

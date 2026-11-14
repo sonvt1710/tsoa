@@ -1,6 +1,5 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { STATUS_CODES } from 'http';
-import { Readable, Stream } from 'stream';
+import { Readable } from 'stream';
 import type { File } from '../../../interfaces/file';
 
 import { Controller } from '../../../interfaces/controller';
@@ -63,6 +62,22 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
 
   hasResponseStarted(reply: FastifyReply): boolean {
     return reply.sent || this.replies.get(reply)?.started === true;
+  }
+
+  /**
+   * Turns the failure that authentication reports into the error Fastify hands to the error handler.
+   * An Error keeps its identity, so `instanceof` checks and its stack still work. Any other value is
+   * wrapped in an Error whose `cause` is that value. Both carry `statusCode` for Fastify's default handler.
+   */
+  authenticationError(failure: { message?: unknown; status?: number }): Error & { status: number; statusCode: number } {
+    const status = failure.status || 401;
+    // failureToReport hands back the rejection itself, or an object inheriting from it when the rejection is frozen.
+    if (failure instanceof Error) {
+      return Object.assign(failure, { status, statusCode: status });
+    }
+    const cause = failure instanceof String ? failure.valueOf() : failure;
+    const error = new Error(typeof failure.message === 'string' ? failure.message : '');
+    return Object.assign(error, { cause, status, statusCode: status });
   }
 
   private responseCompletion(reply: FastifyReply): Promise<void> {
@@ -200,17 +215,31 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
     if (this.hasResponseStarted(reply)) return this.responseCompletion(reply);
     reply.code(statusCode || (data !== null && data !== undefined ? 200 : 204));
     reply.headers(headers || {});
-    // Koa uses the status message for an absent body with an explicit non-empty status.
     const emptyResponse = reply.statusCode === 204 || reply.statusCode === 205 || reply.statusCode === 304;
-    let body = emptyResponse ? undefined : (data ?? STATUS_CODES[reply.statusCode] ?? String(reply.statusCode));
     const mediaType = String(reply.getHeader('content-type') || '')
       .split(';', 1)[0]
       .trim()
       .toLowerCase();
-    if (body !== undefined && mediaType && !mediaType.includes('json') && typeof body !== 'string' && !Buffer.isBuffer(body) && !(body instanceof Stream)) {
+    const isJson = mediaType.includes('json');
+    // Like Express: no data sends an empty body, and null is sent as JSON null when the response is JSON.
+    let body = emptyResponse || data === undefined || (data === null && !isJson) ? undefined : data;
+    if (body === null) {
+      body = 'null';
+    } else if (body instanceof ArrayBuffer) {
+      // Fastify sends typed arrays and Buffers as bytes, but rejects a bare ArrayBuffer.
+      body = Buffer.from(body);
+    } else if (body !== undefined && mediaType && !isJson && typeof body !== 'string' && !this.isRawPayload(body)) {
       body = JSON.stringify(body);
     }
     reply.send(body);
     return this.responseCompletion(reply);
+  }
+
+  /** Payloads Fastify sends as bytes: Buffers, typed arrays, ArrayBuffers, Node and web streams, and fetch Responses. */
+  private isRawPayload(body: unknown): boolean {
+    if (typeof body !== 'object' || body === null) return false;
+    if (ArrayBuffer.isView(body) || body instanceof ArrayBuffer) return true;
+    const candidate = body as { pipe?: unknown; getReader?: unknown };
+    return typeof candidate.pipe === 'function' || typeof candidate.getReader === 'function' || Object.prototype.toString.call(body) === '[object Response]';
   }
 }

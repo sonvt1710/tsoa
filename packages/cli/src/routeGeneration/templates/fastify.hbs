@@ -163,8 +163,7 @@ export async function RegisterRoutes(app: FastifyInstance, opts: { {{#if useMult
                     return;
                 }
 
-                const error = failureToReport(security, failedAttempts);
-                throw Object.assign(new Error(error.message), error, { statusCode: error.status || 401 });
+                throw templateService.authenticationError(failureToReport(security, failedAttempts));
             }
         }
     }
