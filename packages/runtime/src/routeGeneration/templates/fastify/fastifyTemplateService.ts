@@ -43,10 +43,33 @@ type FastifyReturnHandlerParameters = {
   data?: any;
 };
 
+/** Sets `status` and `statusCode` without changing how existing properties are described. Returns undefined when the target refuses. */
+function setStatus<T extends object>(target: T, status: number): (T & { status: number; statusCode: number }) | undefined {
+  try {
+    for (const key of ['status', 'statusCode'] as const) {
+      if (Object.prototype.hasOwnProperty.call(target, key)) {
+        (target as Record<string, unknown>)[key] = status;
+        if ((target as Record<string, unknown>)[key] !== status) return undefined;
+      } else {
+        Object.defineProperty(target, key, { value: status, writable: true, configurable: true, enumerable: true });
+      }
+    }
+    return target as T & { status: number; statusCode: number };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A client mistake in a multipart body. `code` and `statusCode` follow the errors @fastify/multipart throws. */
+function multipartError(code: string, message: string, statusCode: number): Error & { code: string; statusCode: number } {
+  return Object.assign(new Error(message), { code, statusCode });
+}
+
 export class FastifyTemplateService extends TemplateService<FastifyApiHandlerParameters, FastifyValidationArgsParameters, FastifyReturnHandlerParameters> {
   private readonly files = new WeakMap<FastifyRequest, Record<string, MemoryFile[]>>();
   private readonly replies = new WeakMap<FastifyReply, { started: boolean }>();
 
+  /** Records when a response starts, so later steps can tell an answered request apart. Part of the contract between generated routes and the runtime; application code does not need to call it. */
   initializeReply(reply: FastifyReply): void {
     if (this.replies.has(reply)) return;
     const state = { started: false };
@@ -60,36 +83,35 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
     };
   }
 
+  /** Whether a response was sent or has started sending for this request. Part of the contract between generated routes and the runtime; application code does not need to call it. */
   hasResponseStarted(reply: FastifyReply): boolean {
     return reply.sent || this.replies.get(reply)?.started === true;
   }
 
   /**
-   * Turns the failure that authentication reports into the error Fastify hands to the error handler.
-   * An Error is passed on itself, so `instanceof` checks and its stack still work; `status` and
-   * `statusCode` are defined on it, or on an object inheriting from it when it refuses them (frozen,
-   * or getter-only). Any other value is wrapped in an Error whose `cause` is the rejected value.
-   * The status is the failure's `status`, then its `statusCode` (as set by @fastify/error), then 401.
+   * Turns the failure that authentication reports into the error the generated routes throw to Fastify's
+   * error handler. Part of the contract between generated routes and the runtime; application code does
+   * not need to call it.
+   *
+   * - The status is the failure's `status`, then its `statusCode` (as @fastify/error sets it), if it is an
+   *   integer from 400 to 599. Otherwise it is 401.
+   * - An Error is passed on itself, so `instanceof` checks and its stack still work. `status` and
+   *   `statusCode` are set on it: assigned when writable, defined when absent. When it refuses them
+   *   (frozen, or read-only), an object that inherits from it carries them instead; that object is not a
+   *   native error for `util.types.isNativeError`.
+   * - Any other value is wrapped in an Error. Its `cause` is the rejected value, except that a null or
+   *   undefined rejection arrives as an empty object. A string rejection is also the message.
    */
-  authenticationError(failure: { message?: unknown; status?: number; statusCode?: number }): Error & { status: number; statusCode: number } {
-    const status = failure.status || failure.statusCode || 401;
-    const withStatus = <T extends object>(target: T) =>
-      Object.defineProperties(target, {
-        status: { value: status, writable: true, configurable: true, enumerable: true },
-        statusCode: { value: status, writable: true, configurable: true, enumerable: true },
-      }) as T & { status: number; statusCode: number };
+  authenticationError(failure: { message?: unknown; status?: unknown; statusCode?: unknown }): Error & { status: number; statusCode: number } {
+    const isErrorStatus = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 400 && (value as number) <= 599;
+    const status = isErrorStatus(failure.status) ? failure.status : isErrorStatus(failure.statusCode) ? failure.statusCode : 401;
     if (failure instanceof Error) {
-      try {
-        return withStatus(failure);
-      } catch {
-        return withStatus(Object.create(failure) as Error);
-      }
+      return setStatus(failure, status) ?? (setStatus(Object.create(failure) as Error, status) as Error & { status: number; statusCode: number });
     }
     // failureToReport boxes primitive rejections with Object(); unwrap them so `cause` is the rejected value.
     const cause = failure instanceof String || failure instanceof Number || failure instanceof Boolean ? failure.valueOf() : failure;
     const message = typeof failure.message === 'string' ? failure.message : typeof cause === 'string' ? cause : '';
-    const error = new Error(message);
-    return withStatus(Object.assign(error, { cause }));
+    return setStatus(Object.assign(new Error(message), { cause }), status) as Error & { status: number; statusCode: number };
   }
 
   private responseCompletion(reply: FastifyReply): Promise<void> {
@@ -191,6 +213,7 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
     return values;
   }
 
+  /** Reads a multipart body into `request.body` and the uploaded files for `getValidatedArgs`. Rejects a file under an undeclared field or past `maxCount` with 400, and a truncated field or file with 413. Part of the contract between generated routes and the runtime; application code does not need to call it. */
   async collectMultipart(request: MultipartRequest, fields: ReadonlyArray<{ name: string; maxCount?: number }>): Promise<void> {
     if (!request.isMultipart()) return;
     const files: Record<string, MemoryFile[]> = Object.create(null);
@@ -199,7 +222,7 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
       if (part.type === 'file') {
         const field = fields.find(field => field.name === part.fieldname);
         if (!field || (field.maxCount && files[part.fieldname]?.length >= field.maxCount)) {
-          throw new Error('Unexpected field');
+          throw multipartError('FST_TSOA_UNEXPECTED_FILE_FIELD', 'Unexpected field', 400);
         }
         const buffer = await part.toBuffer();
         // With throwFileSizeLimit: false the plugin hands back a silently truncated buffer.
@@ -213,7 +236,7 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
           buffer,
         });
       } else {
-        if (part.valueTruncated || part.fieldnameTruncated) throw new Error('Field value too long');
+        if (part.valueTruncated || part.fieldnameTruncated) throw multipartError('FST_TSOA_FIELD_TOO_LONG', 'Field value too long', 413);
         const previous = body[part.fieldname];
         body[part.fieldname] = previous === undefined ? part.value : [...(Array.isArray(previous) ? previous : [previous]), part.value];
       }
@@ -236,9 +259,12 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
     reply.code(statusCode || (hasBody ? 200 : 204));
     const emptyResponse = reply.statusCode === 204 || reply.statusCode === 205 || reply.statusCode === 304;
     let body = emptyResponse || !hasBody ? undefined : data;
-    if (body instanceof ArrayBuffer) {
+    if (body instanceof ArrayBuffer || (typeof SharedArrayBuffer !== 'undefined' && body instanceof SharedArrayBuffer)) {
       // Fastify sends typed arrays and Buffers as bytes, but rejects a bare ArrayBuffer.
       body = Buffer.from(body);
+    } else if (ArrayBuffer.isView(body) && !(body.buffer instanceof ArrayBuffer)) {
+      // Fastify sends a view only over an ArrayBuffer; copy a view over a SharedArrayBuffer.
+      body = Buffer.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
     } else if (body !== undefined && mediaType && !isJson && typeof body !== 'string' && !this.isRawPayload(body)) {
       body = JSON.stringify(body);
     }
@@ -246,7 +272,7 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
     return this.responseCompletion(reply);
   }
 
-  /** Payloads Fastify sends as bytes: Buffers, typed arrays, ArrayBuffers, Node and web streams, and fetch Responses. */
+  /** Payloads Fastify sends as they are: Buffers, typed arrays, DataViews, Node and web streams, and fetch Responses, which set their own status and headers. */
   private isRawPayload(body: unknown): boolean {
     if (typeof body !== 'object' || body === null) return false;
     if (ArrayBuffer.isView(body)) return true;

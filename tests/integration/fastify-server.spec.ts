@@ -153,7 +153,7 @@ describe('Fastify Server', () => {
   describe('file upload', function () {
     this.timeout(20_000);
 
-    registerFileUploadTests(app, basePath);
+    registerFileUploadTests(app, basePath, { unexpectedFieldStatus: 400 });
 
     it('validates repeated multipart text fields as an array in encounter order', () => {
       return verifyFileUploadRequest(
@@ -175,7 +175,7 @@ describe('Fastify Server', () => {
         (_err, res) => {
           expect(res.text).to.equal('Field value too long');
         },
-        500,
+        413,
       );
     });
   });

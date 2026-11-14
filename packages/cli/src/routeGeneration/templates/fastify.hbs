@@ -51,6 +51,16 @@ const models: TsoaRoute.Models = {
 const templateService = new FastifyTemplateService(models, {{{ json minimalSwaggerConfig }}});
 
 
+// Fastify skips the remaining preHandlers only once a response has ended. A client that disconnects while a
+// slow onSend or preSerialization hook runs leaves an answered request unended, so check before each step.
+function unlessAnswered(hook: preHandlerHookHandler): preHandlerHookHandler {
+    return function (this: FastifyInstance, request, reply, done) {
+        if (templateService.hasResponseStarted(reply)) return done();
+        // Returning the hook's result lets Fastify wait for a promise, as it does for an unwrapped hook.
+        return hook.call(this, request, reply, done);
+    };
+}
+
 export async function RegisterRoutes(app: FastifyInstance, opts: { {{#if useMultipart}}multipart?: FastifyMultipartOptions{{/if}} }) {
     app.addHook('onRequest', (_request, reply, done) => {
         templateService.initializeReply(reply);
@@ -93,10 +103,10 @@ export async function RegisterRoutes(app: FastifyInstance, opts: { {{#if useMult
             authenticateMiddleware({{json security}}),
             {{/if}}
             {{#if multipart}}
-            request => templateService.collectMultipart(request, uploadFields{{../name}}_{{name}}),
+            unlessAnswered(async request => templateService.collectMultipart(request, uploadFields{{../name}}_{{name}})),
             {{/if}}
-            ...fetchMiddlewares<preHandlerHookHandler>({{../name}}),
-            ...fetchMiddlewares<preHandlerHookHandler>({{../name}}.prototype.{{name}}),
+            ...fetchMiddlewares<preHandlerHookHandler>({{../name}}).map(unlessAnswered),
+            ...fetchMiddlewares<preHandlerHookHandler>({{../name}}.prototype.{{name}}).map(unlessAnswered),
         ],
         handler: async function {{../name}}_{{name}}(request, reply) {
             if (templateService.hasResponseStarted(reply)) return reply;

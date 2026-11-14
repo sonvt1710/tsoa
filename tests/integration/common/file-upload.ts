@@ -6,7 +6,8 @@ import { resolve } from 'path';
 import { App } from 'supertest/types';
 import { verifyFileUploadRequest } from '../utils';
 
-export function registerFileUploadTests(app: App, basePath: string) {
+/** `unexpectedFieldStatus`: the status for a file under an undeclared field name. Multer-based servers answer 500. */
+export function registerFileUploadTests(app: App, basePath: string, { unexpectedFieldStatus = 500 }: { unexpectedFieldStatus?: number } = {}) {
   it('can post a file', () => {
     const formData = { someFile: '@../package.json' };
     return verifyFileUploadRequest(app, basePath + '/PostTest/File', formData, (_err, res) => {
@@ -36,10 +37,10 @@ export function registerFileUploadTests(app: App, basePath: string) {
       basePath + '/PostTest/File',
       formData,
       (_err, res) => {
-        expect(res.status).to.equal(500);
+        expect(res.status).to.equal(unexpectedFieldStatus);
         expect(res.text).to.be.oneOf(['Unexpected field', 'Unexpected file field']);
       },
-      500,
+      unexpectedFieldStatus,
     );
   });
 

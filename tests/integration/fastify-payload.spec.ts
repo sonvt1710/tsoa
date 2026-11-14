@@ -123,8 +123,8 @@ describe('Fastify payload handling', () => {
         headers: { 'content-type': 'multipart/form-data; boundary=boundary' },
         payload: multipartFile.replace('--boundary--\r\n', multipartFile),
       });
-      expect(response.statusCode).to.equal(500);
-      expect(response.json().message).to.equal('Unexpected field');
+      expect(response.statusCode).to.equal(400);
+      expect(response.json()).to.include({ message: 'Unexpected field', code: 'FST_TSOA_UNEXPECTED_FILE_FIELD' });
     });
 
     it('accepts a file within the limit when throwFileSizeLimit is false', async () => {

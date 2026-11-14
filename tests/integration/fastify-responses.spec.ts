@@ -4,7 +4,8 @@ import { expect } from 'chai';
 import Fastify, { FastifyInstance } from 'fastify';
 import 'mocha';
 import { Readable } from 'stream';
-import { setImmediate as nextTurn } from 'timers/promises';
+import { AddressInfo, connect } from 'net';
+import { setImmediate as nextTurn, setTimeout as sleep } from 'timers/promises';
 import { resetState, stateOf } from '../fixtures/controllers/middlewaresFastifyController';
 import { sharedAuthError } from '../fixtures/fastify/authentication';
 import { RegisterRoutes } from '../fixtures/fastify/routes';
@@ -52,6 +53,23 @@ describe('Fastify responses and authentication', () => {
 
     it('sends only the viewed bytes of a Uint8Array subarray', async () => {
       respondWith(app, 200, new Uint8Array([0, ...bytes, 0]).subarray(1, 5), { 'Content-Type': 'image/png' });
+      const response = await app.inject('/');
+      expect([...response.rawPayload]).to.deep.equal(bytes);
+    });
+
+    it('sends a view over a SharedArrayBuffer as raw bytes', async () => {
+      const shared = new Uint8Array(new SharedArrayBuffer(bytes.length + 2));
+      shared.set(bytes, 1);
+      respondWith(app, 200, shared.subarray(1, 5), { 'Content-Type': 'image/png' });
+      const response = await app.inject('/');
+      expect(response.statusCode).to.equal(200);
+      expect([...response.rawPayload]).to.deep.equal(bytes);
+    });
+
+    it('sends a SharedArrayBuffer as raw bytes', async () => {
+      const shared = new Uint8Array(new SharedArrayBuffer(bytes.length));
+      shared.set(bytes);
+      respondWith(app, 200, shared.buffer, { 'Content-Type': 'image/png' });
       const response = await app.inject('/');
       expect([...response.rawPayload]).to.deep.equal(bytes);
     });
@@ -188,6 +206,43 @@ describe('Fastify responses and authentication', () => {
       });
     }
 
+    describe('authenticationError', () => {
+      const service = new FastifyTemplateService({}, config);
+
+      for (const [description, failure, status] of [
+        ['a status below 400', Object.assign(new Error('x'), { status: 200 }), 401],
+        ['a non-numeric status, falling back to statusCode', Object.assign(new Error('x'), { status: 'fail', statusCode: 403 }), 403],
+        ['a status above 599', Object.assign(new Error('x'), { status: 600 }), 401],
+        ['a valid status over a conflicting statusCode', Object.assign(new Error('x'), { status: 403, statusCode: 418 }), 403],
+      ] as const) {
+        it(`answers ${status} for ${description}`, () => {
+          const error = service.authenticationError(failure);
+          expect(error).to.equal(failure);
+          expect(error.status).to.equal(status);
+          expect(error.statusCode).to.equal(status);
+        });
+      }
+
+      it('keeps a setter-backed status as an accessor', () => {
+        let stored = 0;
+        const failure = new Error('x');
+        Object.defineProperty(failure, 'status', { get: () => stored, set: (value: number) => (stored = value), enumerable: false, configurable: true });
+        const error = service.authenticationError(failure);
+        expect(error).to.equal(failure);
+        expect(stored).to.equal(401);
+        expect(Object.getOwnPropertyDescriptor(failure, 'status')).to.have.property('set').that.is.a('function');
+      });
+
+      it('falls back to an inheriting object for a read-only status', () => {
+        const failure = Object.defineProperty(new Error('x'), 'status', { value: 403, writable: false, configurable: false });
+        const error = service.authenticationError(failure);
+        expect(error).to.not.equal(failure);
+        expect(Object.getPrototypeOf(error)).to.equal(failure);
+        expect(error.status).to.equal(403);
+        expect(error.statusCode).to.equal(403);
+      });
+    });
+
     it('wraps a non-Error rejection in an Error with the rejection as cause', async () => {
       const seen = captureErrors();
       const response = await app.inject('/v1/SecurityTest/Koa?access_token=bogus');
@@ -206,8 +261,9 @@ describe('Fastify responses and authentication', () => {
     });
   });
 
-  // The authentication hook returns `reply`, whose then() resolves only once the response is written.
-  // Fastify then sees reply.sent and skips the remaining preHandlers, even behind slow response hooks.
+  // The authentication hook returns `reply`, whose then() resolves once the response has ended or the
+  // client has gone. Fastify skips the remaining preHandlers only in the first case, so the generated
+  // routes also check before each later preHandler.
   describe('a response sent by authentication', () => {
     for (const [hook, token, status, body] of [
       ['onSend', 'ghi123456', 401, 'some custom response'],
@@ -228,6 +284,39 @@ describe('Fastify responses and authentication', () => {
         expect(response.statusCode).to.equal(status);
         expect(response.body).to.equal(body);
         expect(calls).to.equal(1);
+        expect(stateOf('route')).to.equal(undefined);
+        expect(stateOf('secured')).to.equal(undefined);
+        expect(stateOf('securedController')).to.equal(undefined);
+      });
+    }
+
+    for (const [hook, token] of [
+      ['onSend', 'ghi123456'],
+      ['preSerialization', 'send-object'],
+    ] as const) {
+      it(`skips route middlewares when the client disconnects during a slow ${hook} hook`, async () => {
+        resetState();
+        let hookDone!: () => void;
+        const hookFinished = new Promise<void>(resolve => (hookDone = resolve));
+        let entered!: () => void;
+        const hookEntered = new Promise<void>(resolve => (entered = resolve));
+        app.addHook(hook, async (_request, _reply, payload) => {
+          entered();
+          await sleep(100);
+          hookDone();
+          return payload;
+        });
+        app.register(RegisterRoutes);
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const { port } = app.server.address() as AddressInfo;
+        const socket = connect(port, '127.0.0.1', () => {
+          socket.write(`GET /v1/MiddlewareTestFastify/secured?access_token=${token} HTTP/1.1\r\nHost: localhost\r\n\r\n`);
+        });
+        socket.on('error', () => undefined);
+        await hookEntered;
+        socket.destroy();
+        await hookFinished;
+        await sleep(50);
         expect(stateOf('route')).to.equal(undefined);
         expect(stateOf('secured')).to.equal(undefined);
         expect(stateOf('securedController')).to.equal(undefined);
