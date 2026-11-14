@@ -20,7 +20,7 @@ OpenAPI-compliant REST APIs using TypeScript and Node
   - Parameters/model properties marked as required or optional based on TypeScript (e.g. myProperty?: string is optional in the OpenAPI spec)
   - jsDoc supported for object descriptions (most other metadata can be inferred from TypeScript types)
 - Routes are generated for middleware of choice
-  - Express (4 and 5), Hapi, and Koa currently supported, other middleware can be supported using a simple handlebars template
+  - Express (4 and 5), Hapi, Koa, and Fastify currently supported, other middleware can be supported using a simple handlebars template
   - Validate request payloads
 
 ## Philosophy
@@ -38,6 +38,41 @@ OpenAPI-compliant REST APIs using TypeScript and Node
 - [Documentation](https://tsoa-community.github.io/docs/)
 - [API Reference](https://tsoa-community.github.io/reference/)
 - [Getting started guide](https://tsoa-community.github.io/docs/getting-started)
+
+### Fastify
+
+The current Fastify v5 dependency tree requires Node.js 22 or later. Install `fastify` and set `routes.middleware` to `"fastify"` in `tsoa.json`.
+If your controllers use `@FormField`, `@UploadedFile`, or `@UploadedFiles`, also install `@fastify/multipart@^9`.
+
+Register `RegisterRoutes` with plain `app.register`; wrapping it in `fastify-plugin` removes the isolation and the prefix, and an enclosing multipart registration is rejected at startup.
+
+Register the generated routes as a plugin:
+
+```ts
+import Fastify from 'fastify';
+import { RegisterRoutes } from './routes';
+
+const app = Fastify();
+app.register(RegisterRoutes);
+await app.listen({ port: 3000 });
+```
+
+Pass a `prefix` or `multipart` options object as the second argument to `app.register` to configure the plugin:
+
+```ts
+app.register(RegisterRoutes, {
+  multipart: { limits: { fileSize: 20 * 1024 * 1024, files: 5 } },
+});
+```
+
+Your multipart limits override the defaults, including the 8 MiB file limit. tsoa forces `attachFieldsToBody: false` because it collects the parts itself.
+
+The authentication module exports `fastifyAuthentication(request, securityName, scopes?, reply?)` and returns a promise, like Koa authentication.
+Use native Fastify preHandler hooks with `@Middlewares<preHandlerHookHandler>(...)`.
+
+Uploads are kept in memory; there is no disk storage option.
+Raw binary request streams bypass Fastify's `bodyLimit`, as they do in Koa.
+`@Produces` does not set response headers at runtime, as in Koa and Hapi.
 
 ## Examples
 
