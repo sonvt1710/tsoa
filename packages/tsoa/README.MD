@@ -33,6 +33,11 @@ OpenAPI-compliant REST APIs using TypeScript and Node
 - Runtime validation of tsoa should behave as closely as possible to the specifications that the generated OpenAPI 2/3 schema describes. Any differences in validation logic are clarified by logging warnings during the generation of the OpenAPI Specification (OAS) and/or the routes.
   - Please note that by enabling OpenAPI 3 you minimize the chances of divergent validation logic since OpenAPI 3 has a more expressive schema syntax.
 
+## Requirements
+
+- Node.js 22.12 or later, 24 or 26
+- TypeScript 5.7 or later, or TypeScript 6
+
 ## Getting Started
 
 - [Documentation](https://tsoa-community.github.io/docs/)
@@ -41,7 +46,7 @@ OpenAPI-compliant REST APIs using TypeScript and Node
 
 ### Fastify
 
-The current Fastify v5 dependency tree requires Node.js 22 or later. Install `fastify` and set `routes.middleware` to `"fastify"` in `tsoa.json`.
+Install `fastify` and set `routes.middleware` to `"fastify"` in `tsoa.json`.
 If your controllers use `@FormField`, `@UploadedFile`, or `@UploadedFiles`, also install `@fastify/multipart@^9`.
 
 Register `RegisterRoutes` with plain `app.register`; wrapping it in `fastify-plugin` removes the isolation and the prefix, and an enclosing multipart registration is rejected at startup.
