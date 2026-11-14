@@ -1,6 +1,15 @@
 import { MissingCredentialsError } from '@tsoa/runtime';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 
+/** One Error instance rejected on every `shared-error` request, so tests can check the error handler receives it. */
+export const sharedAuthError = new MissingCredentialsError('api_key');
+
+class GetterStatusError extends Error {
+  get status() {
+    return 403;
+  }
+}
+
 export function fastifyAuthentication(request: FastifyRequest<{ Querystring: Record<string, string> }>, name: string, scopes: string[] | undefined, response: FastifyReply): Promise<any> {
   if (name === 'api_key') {
     let token;
@@ -35,6 +44,14 @@ export function fastifyAuthentication(request: FastifyRequest<{ Querystring: Rec
       return Promise.resolve();
     } else if (token === 'never-settles') {
       return new Promise(() => undefined);
+    } else if (token === 'shared-error') {
+      return Promise.reject(sharedAuthError);
+    } else if (token === 'getter-status') {
+      return Promise.reject(new GetterStatusError('api_key'));
+    } else if (token === 'frozen-status-code') {
+      return Promise.reject(Object.freeze(Object.assign(new Error('api_key'), { statusCode: 403 })));
+    } else if (token === 'status-code-only') {
+      return Promise.reject(Object.assign(new Error('api_key'), { statusCode: 429 }));
     } else if (token === 'frozen') {
       return Promise.reject(Object.freeze(new Error('api_key')));
     } else if (token === 'frozen-status') {

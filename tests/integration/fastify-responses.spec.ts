@@ -6,6 +6,7 @@ import 'mocha';
 import { Readable } from 'stream';
 import { setImmediate as nextTurn } from 'timers/promises';
 import { resetState, stateOf } from '../fixtures/controllers/middlewaresFastifyController';
+import { sharedAuthError } from '../fixtures/fastify/authentication';
 import { RegisterRoutes } from '../fixtures/fastify/routes';
 
 const config = { noImplicitAdditionalProperties: 'throw-on-extras', bodyCoercion: true } as const;
@@ -48,6 +49,12 @@ describe('Fastify responses and authentication', () => {
         expect([...response.rawPayload]).to.deep.equal(bytes);
       });
     }
+
+    it('sends only the viewed bytes of a Uint8Array subarray', async () => {
+      respondWith(app, 200, new Uint8Array([0, ...bytes, 0]).subarray(1, 5), { 'Content-Type': 'image/png' });
+      const response = await app.inject('/');
+      expect([...response.rawPayload]).to.deep.equal(bytes);
+    });
 
     it('sends a web ReadableStream as raw bytes', async () => {
       const stream = new ReadableStream({
@@ -99,6 +106,36 @@ describe('Fastify responses and authentication', () => {
       expect(response.json()).to.equal(null);
     });
 
+    it('sends JSON null with 200 for null under a JSON content type and no status', async () => {
+      respondWith(app, undefined, null, { 'Content-Type': 'application/json' });
+      const response = await app.inject('/');
+      expect(response.statusCode).to.equal(200);
+      expect(response.body).to.equal('null');
+    });
+
+    it('sends JSON null for null under a vendor JSON content type', async () => {
+      respondWith(app, 202, null, { 'Content-Type': 'application/vnd.test+json' });
+      const response = await app.inject('/');
+      expect(response.statusCode).to.equal(202);
+      expect(response.body).to.equal('null');
+    });
+
+    it('sends JSON null through a custom serializer only once', async () => {
+      const service = new FastifyTemplateService({}, config);
+      class NullController {
+        response() {
+          return null;
+        }
+      }
+      app.get('/custom', async (request, reply) => {
+        reply.header('Content-Type', 'application/json').serializer((payload: unknown) => JSON.stringify(payload));
+        await service.apiHandler({ methodName: 'response', controller: new NullController(), request, reply, validatedArgs: [], successStatus: 200 });
+        return reply;
+      });
+      const response = await app.inject('/custom');
+      expect(response.body).to.equal('null');
+    });
+
     it('sends an empty body for null without a content type', async () => {
       respondWith(app, 200, null);
       const response = await app.inject('/');
@@ -108,49 +145,90 @@ describe('Fastify responses and authentication', () => {
   });
 
   describe('authentication failures', () => {
-    it('hands the rejected Error itself to the error handler, with a status', async () => {
-      let seen: unknown;
+    function captureErrors() {
+      const seen: Array<Error & { status?: number; statusCode?: number; cause?: unknown }> = [];
       app.setErrorHandler((error, _request, reply) => {
-        seen = error;
-        return reply.code((error as { statusCode?: number }).statusCode ?? 500).send({ name: (error as Error).name });
+        seen.push(error as Error);
+        return reply.code((error as { statusCode?: number }).statusCode ?? 500).send({ message: (error as Error).message });
       });
       app.register(RegisterRoutes);
-      const response = await app.inject('/v1/SecurityTest/Koa?access_token=frozen-status');
-      expect(response.statusCode).to.equal(403);
-      expect(seen).to.be.instanceOf(Error);
-      expect((seen as Error).message).to.equal('api_key');
+      return seen;
+    }
+
+    it('hands the rejected Error itself to the error handler', async () => {
+      const seen = captureErrors();
+      const response = await app.inject('/v1/SecurityTest/Koa?access_token=shared-error');
+      expect(response.statusCode).to.equal(401);
+      expect(seen).to.have.length(1);
+      expect(seen[0]).to.equal(sharedAuthError);
+      expect(seen[0].statusCode).to.equal(401);
     });
 
-    it('wraps a non-Error rejection in an Error with the rejection as cause', async () => {
-      let seen: unknown;
-      app.setErrorHandler((error, _request, reply) => {
-        seen = error;
-        return reply.code((error as { statusCode?: number }).statusCode ?? 500).send();
+    it('hands the same Error instance on every request', async () => {
+      const seen = captureErrors();
+      await app.inject('/v1/SecurityTest/Koa?access_token=shared-error');
+      const response = await app.inject('/v1/SecurityTest/Koa?access_token=shared-error');
+      expect(response.statusCode).to.equal(401);
+      expect(seen[1]).to.equal(sharedAuthError);
+    });
+
+    for (const [description, token, status] of [
+      ['a frozen Error with a status', 'frozen-status', 403],
+      ['a frozen Error with a statusCode', 'frozen-status-code', 403],
+      ['an Error whose status is a getter', 'getter-status', 403],
+      ['an Error with only a statusCode', 'status-code-only', 429],
+    ] as const) {
+      it(`passes on ${description} with its status`, async () => {
+        const seen = captureErrors();
+        const response = await app.inject(`/v1/SecurityTest/Koa?access_token=${token}`);
+        expect(response.statusCode).to.equal(status);
+        expect(response.json()).to.deep.equal({ message: 'api_key' });
+        expect(seen[0]).to.be.instanceOf(Error);
+        expect(seen[0].statusCode).to.equal(status);
       });
-      app.register(RegisterRoutes);
+    }
+
+    it('wraps a non-Error rejection in an Error with the rejection as cause', async () => {
+      const seen = captureErrors();
       const response = await app.inject('/v1/SecurityTest/Koa?access_token=bogus');
       expect(response.statusCode).to.equal(401);
-      expect(seen).to.be.instanceOf(Error);
-      expect((seen as Error).message).to.equal('api_key');
-      expect((seen as Error & { cause?: unknown }).cause).to.deep.equal({ message: 'api_key' });
+      expect(seen[0]).to.be.instanceOf(Error);
+      expect(seen[0].message).to.equal('api_key');
+      expect(seen[0].cause).to.deep.equal({ message: 'api_key' });
+    });
+
+    it('uses a string rejection as the message and the cause', async () => {
+      const seen = captureErrors();
+      const response = await app.inject('/v1/SecurityTest/ApiKeyAndOauthOrAnonymous?tsoa=string-rejection');
+      expect(response.statusCode).to.equal(401);
+      expect(seen[0].message).to.equal('denied');
+      expect(seen[0].cause).to.equal('denied');
     });
   });
 
   // The authentication hook returns `reply`, whose then() resolves only once the response is written.
   // Fastify then sees reply.sent and skips the remaining preHandlers, even behind slow response hooks.
   describe('a response sent by authentication', () => {
-    for (const hook of ['onSend', 'preSerialization'] as const) {
+    for (const [hook, token, status, body] of [
+      ['onSend', 'ghi123456', 401, 'some custom response'],
+      // A string without a content type skips preSerialization, so this case sends an object.
+      ['preSerialization', 'send-object', 200, '{"value":"authentication"}'],
+    ] as const) {
       it(`skips route middlewares while an asynchronous ${hook} hook is still running`, async () => {
         resetState();
+        let calls = 0;
         app.addHook(hook, async (_request, _reply, payload) => {
+          calls++;
           await nextTurn();
           await nextTurn();
           return payload;
         });
         app.register(RegisterRoutes);
-        const response = await app.inject('/v1/MiddlewareTestFastify/secured?access_token=ghi123456');
-        expect(response.statusCode).to.equal(401);
-        expect(response.body).to.equal('some custom response');
+        const response = await app.inject(`/v1/MiddlewareTestFastify/secured?access_token=${token}`);
+        expect(response.statusCode).to.equal(status);
+        expect(response.body).to.equal(body);
+        expect(calls).to.equal(1);
+        expect(stateOf('route')).to.equal(undefined);
         expect(stateOf('secured')).to.equal(undefined);
         expect(stateOf('securedController')).to.equal(undefined);
       });

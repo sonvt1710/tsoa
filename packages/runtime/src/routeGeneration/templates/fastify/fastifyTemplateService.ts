@@ -66,18 +66,30 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
 
   /**
    * Turns the failure that authentication reports into the error Fastify hands to the error handler.
-   * An Error keeps its identity, so `instanceof` checks and its stack still work. Any other value is
-   * wrapped in an Error whose `cause` is that value. Both carry `statusCode` for Fastify's default handler.
+   * An Error is passed on itself, so `instanceof` checks and its stack still work; `status` and
+   * `statusCode` are defined on it, or on an object inheriting from it when it refuses them (frozen,
+   * or getter-only). Any other value is wrapped in an Error whose `cause` is the rejected value.
+   * The status is the failure's `status`, then its `statusCode` (as set by @fastify/error), then 401.
    */
-  authenticationError(failure: { message?: unknown; status?: number }): Error & { status: number; statusCode: number } {
-    const status = failure.status || 401;
-    // failureToReport hands back the rejection itself, or an object inheriting from it when the rejection is frozen.
+  authenticationError(failure: { message?: unknown; status?: number; statusCode?: number }): Error & { status: number; statusCode: number } {
+    const status = failure.status || failure.statusCode || 401;
+    const withStatus = <T extends object>(target: T) =>
+      Object.defineProperties(target, {
+        status: { value: status, writable: true, configurable: true, enumerable: true },
+        statusCode: { value: status, writable: true, configurable: true, enumerable: true },
+      }) as T & { status: number; statusCode: number };
     if (failure instanceof Error) {
-      return Object.assign(failure, { status, statusCode: status });
+      try {
+        return withStatus(failure);
+      } catch {
+        return withStatus(Object.create(failure) as Error);
+      }
     }
-    const cause = failure instanceof String ? failure.valueOf() : failure;
-    const error = new Error(typeof failure.message === 'string' ? failure.message : '');
-    return Object.assign(error, { cause, status, statusCode: status });
+    // failureToReport boxes primitive rejections with Object(); unwrap them so `cause` is the rejected value.
+    const cause = failure instanceof String || failure instanceof Number || failure instanceof Boolean ? failure.valueOf() : failure;
+    const message = typeof failure.message === 'string' ? failure.message : typeof cause === 'string' ? cause : '';
+    const error = new Error(message);
+    return withStatus(Object.assign(error, { cause }));
   }
 
   private responseCompletion(reply: FastifyReply): Promise<void> {
@@ -213,19 +225,18 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
   protected returnHandler(params: FastifyReturnHandlerParameters) {
     const { reply, statusCode, data, headers } = params;
     if (this.hasResponseStarted(reply)) return this.responseCompletion(reply);
-    reply.code(statusCode || (data !== null && data !== undefined ? 200 : 204));
     reply.headers(headers || {});
-    const emptyResponse = reply.statusCode === 204 || reply.statusCode === 205 || reply.statusCode === 304;
     const mediaType = String(reply.getHeader('content-type') || '')
       .split(';', 1)[0]
       .trim()
       .toLowerCase();
     const isJson = mediaType.includes('json');
-    // Like Express: no data sends an empty body, and null is sent as JSON null when the response is JSON.
-    let body = emptyResponse || data === undefined || (data === null && !isJson) ? undefined : data;
-    if (body === null) {
-      body = 'null';
-    } else if (body instanceof ArrayBuffer) {
+    // Like Express: no data sends an empty body with 204, and null under a JSON content type is JSON null with 200.
+    const hasBody = data !== undefined && (data !== null || isJson);
+    reply.code(statusCode || (hasBody ? 200 : 204));
+    const emptyResponse = reply.statusCode === 204 || reply.statusCode === 205 || reply.statusCode === 304;
+    let body = emptyResponse || !hasBody ? undefined : data;
+    if (body instanceof ArrayBuffer) {
       // Fastify sends typed arrays and Buffers as bytes, but rejects a bare ArrayBuffer.
       body = Buffer.from(body);
     } else if (body !== undefined && mediaType && !isJson && typeof body !== 'string' && !this.isRawPayload(body)) {
@@ -238,7 +249,7 @@ export class FastifyTemplateService extends TemplateService<FastifyApiHandlerPar
   /** Payloads Fastify sends as bytes: Buffers, typed arrays, ArrayBuffers, Node and web streams, and fetch Responses. */
   private isRawPayload(body: unknown): boolean {
     if (typeof body !== 'object' || body === null) return false;
-    if (ArrayBuffer.isView(body) || body instanceof ArrayBuffer) return true;
+    if (ArrayBuffer.isView(body)) return true;
     const candidate = body as { pipe?: unknown; getReader?: unknown };
     return typeof candidate.pipe === 'function' || typeof candidate.getReader === 'function' || Object.prototype.toString.call(body) === '[object Response]';
   }

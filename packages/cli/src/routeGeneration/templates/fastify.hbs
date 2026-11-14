@@ -155,6 +155,7 @@ export async function RegisterRoutes(app: FastifyInstance, opts: { {{#if useMult
                 const anonymous = fallback !== false && (await fallback);
 
                 if(templateService.hasResponseStarted(reply) || (anonymous && prepared())) {
+                    // A status set by authentication with no body answers with the status text, as Koa authentication does.
                     if (!templateService.hasResponseStarted(reply)) reply.send(STATUS_CODES[reply.statusCode] ?? String(reply.statusCode));
                     return reply;
                 }
